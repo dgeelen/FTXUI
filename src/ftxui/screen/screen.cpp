@@ -470,6 +470,58 @@ void Screen::ToString(std::string& ss) const {
   UpdateCellStyle(this, ss, *previous_cell_ref, default_cell);
 }
 
+namespace {
+
+// Visual equality — every field that affects terminal output.
+bool CellsEqual(const Cell& a, const Cell& b) {
+  return a.character == b.character &&
+         a.foreground_color == b.foreground_color &&
+         a.background_color == b.background_color &&
+         a.bold == b.bold &&
+         a.dim == b.dim &&
+         a.underlined == b.underlined &&
+         a.underlined_double == b.underlined_double &&
+         a.blink == b.blink &&
+         a.inverted == b.inverted &&
+         a.italic == b.italic &&
+         a.strikethrough == b.strikethrough &&
+         a.hyperlink == b.hyperlink;
+}
+
+// Emit an absolute CUP sequence: \x1B[{row};{col}H
+void EmitCUP(std::string& ss, int y, int x) {
+  ss += "\x1B[";
+  ss += std::to_string(y + 1);
+  ss += ';';
+  ss += std::to_string(x + 1);
+  ss += 'H';
+}
+
+// Emit a cell's character to the output buffer.
+void EmitCell(const Screen* screen,
+              std::string& ss,
+              const Cell*& last_style,
+              const Cell& cell) {
+  UpdateCellStyle(screen, ss, *last_style, cell);
+  last_style = &cell;
+  if (cell.character.empty()) {
+    ss += ' ';
+  } else {
+    ss += cell.character;
+  }
+}
+
+// Maximum gap of unchanged cells to bridge instead of emitting a new CUP.
+// CUP costs ~8 bytes ("\x1B[rr;ccH"). Bridging outputs the unchanged
+// cells (~1-2 bytes each). Gap <= 6 is cheaper to bridge.
+constexpr int kMaxBridgeGap = 6;
+
+// When more than this fraction of cells changed, full repaint (ToString)
+// is cheaper than per-run CUP addressing.
+constexpr int kFullRepaintPercent = 30;
+
+}  // namespace
+
 // Frame-to-frame diff output: only emit cells that changed.
 bool Screen::ToDiffString(
     std::string& ss,
@@ -482,55 +534,102 @@ bool Screen::ToDiffString(
     return false;
   }
 
-  // Compare cells — visual equality check.
-  auto cells_equal = [](const Cell& a, const Cell& b) -> bool {
-    return a.character == b.character &&
-           a.foreground_color == b.foreground_color &&
-           a.background_color == b.background_color &&
-           a.bold == b.bold &&
-           a.dim == b.dim &&
-           a.underlined == b.underlined &&
-           a.underlined_double == b.underlined_double &&
-           a.blink == b.blink &&
-           a.inverted == b.inverted &&
-           a.italic == b.italic &&
-           a.strikethrough == b.strikethrough &&
-           a.hyperlink == b.hyperlink;
-  };
+  const int total = dimx_ * dimy_;
 
+  // First pass: count changed cells for the repaint-threshold check,
+  // and find the first dirty cell per row for the row-skip fast path.
+  // Both are O(cells) but touch only comparison fields (no allocation).
+  int changed = 0;
+  for (int y = 0; y < dimy_; ++y) {
+    for (int x = 0; x < dimx_; ++x) {
+      if (!CellsEqual(cells_[y][x], prev_cells[y][x])) {
+        ++changed;
+      }
+    }
+  }
+
+  // Nothing changed — skip all output.
+  if (changed == 0) {
+    return true;
+  }
+
+  // Too many changes — full linear repaint is cheaper than CUP-per-run.
+  if (changed * 100 > total * kFullRepaintPercent) {
+    ToString(ss);
+    return false;
+  }
+
+  // Second pass: emit incremental output.
   const Cell default_cell;
   const Cell* last_style = &default_cell;
+
+  // Track cursor position so we can use cheap relative moves.
+  int cur_y = -1;
+  int cur_x = -1;
 
   for (int y = 0; y < dimy_; ++y) {
     int x = 0;
     while (x < dimx_) {
       // Skip unchanged cells.
-      while (x < dimx_ && cells_equal(cells_[y][x], prev_cells[y][x])) {
+      while (x < dimx_ && CellsEqual(cells_[y][x], prev_cells[y][x])) {
         ++x;
       }
       if (x >= dimx_) {
         break;
       }
 
-      // Position cursor at (x, y) using absolute CUP.
-      ss += "\x1B[";
-      ss += std::to_string(y + 1);
-      ss += ';';
-      ss += std::to_string(x + 1);
-      ss += 'H';
+      // Found a dirty cell at (x, y). Before emitting a CUP, check if
+      // bridging a small gap from the current cursor position is cheaper.
+      bool need_position = true;
+      if (cur_y == y && cur_x >= 0 && cur_x <= x &&
+          (x - cur_x) <= kMaxBridgeGap) {
+        // Bridge: output the unchanged cells between cur_x and x.
+        // The cursor is already on this row at cur_x, so just emit
+        // the gap cells (they're visually correct — same as prev frame).
+        for (int bx = cur_x; bx < x; ++bx) {
+          const Cell& cell = cells_[y][bx];
+          EmitCell(this, ss, last_style, cell);
+        }
+        need_position = false;
+      }
 
-      // Output this run of changed cells.
+      if (need_position) {
+        // Use relative move when on the adjacent row at column 0.
+        if (x == 0 && cur_y >= 0 && y == cur_y + 1) {
+          ss += "\r\n";
+        } else {
+          EmitCUP(ss, y, x);
+        }
+      }
+
+      // Output this run of dirty cells, bridging small interior gaps.
       bool previous_fullwidth = false;
-      while (x < dimx_ && !cells_equal(cells_[y][x], prev_cells[y][x])) {
+      while (x < dimx_) {
+        // Check if this cell is dirty.
+        bool dirty = !CellsEqual(cells_[y][x], prev_cells[y][x]);
+
+        if (!dirty) {
+          // Look ahead: is the next dirty cell close enough to bridge?
+          int next_dirty = x + 1;
+          while (next_dirty < dimx_ &&
+                 next_dirty - x <= kMaxBridgeGap &&
+                 CellsEqual(cells_[y][next_dirty],
+                            prev_cells[y][next_dirty])) {
+            ++next_dirty;
+          }
+          // If we found another dirty cell within bridge distance,
+          // output the gap. Otherwise stop this run.
+          if (next_dirty >= dimx_ || next_dirty - x > kMaxBridgeGap ||
+              CellsEqual(cells_[y][next_dirty],
+                         prev_cells[y][next_dirty])) {
+            break;
+          }
+          // Bridge: output unchanged cells through to next_dirty.
+        }
+
         const Cell& cell = cells_[y][x];
         if (!previous_fullwidth) {
-          UpdateCellStyle(this, ss, *last_style, cell);
-          last_style = &cell;
-          if (cell.character.empty()) {
-            ss += ' ';
-          } else {
-            ss += cell.character;
-          }
+          EmitCell(this, ss, last_style, cell);
         }
         if (cell.character.size() <= 1) {
           previous_fullwidth = false;
@@ -539,6 +638,9 @@ bool Screen::ToDiffString(
         }
         ++x;
       }
+
+      cur_y = y;
+      cur_x = x;
     }
   }
 

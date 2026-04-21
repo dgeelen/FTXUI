@@ -1052,24 +1052,23 @@ void App::Draw(Component component) {
 
   const bool resized = frame_count_ == 0 || (dimx != dimx_) || (dimy != dimy_);
 
-  // Can we do incremental diff against the previous frame?
+  // Can we attempt incremental diff against the previous frame?
   const bool can_diff =
       !resized && !internal_->previous_cells.empty() &&
       static_cast<int>(internal_->previous_cells.size()) == dimy_ &&
       static_cast<int>(internal_->previous_cells[0].size()) == dimx_;
 
-  if (!can_diff) {
-    // Full repaint path: undo previous cursor positioning and move to
-    // top-left before overwriting the entire screen.
-    TerminalSend(ResetCursorPosition());
+  // Always undo the previous frame's cursor positioning. For diff frames
+  // the extra bytes are harmless (CUP is absolute); for full frames it's
+  // required so ResetPosition starts from the right place.
+  TerminalSend(ResetCursorPosition());
 
-    if (frame_count_ != 0) {
-      ResetPosition(internal_->output_buffer, resized);
+  if (!can_diff && frame_count_ != 0) {
+    ResetPosition(internal_->output_buffer, resized);
 
-      if ((dimx < dimx_) && !use_alternative_screen_) {
-        TerminalSend("\033[J");  // clear terminal output
-        TerminalSend("\033[H");  // move cursor to home position
-      }
+    if ((dimx < dimx_) && !use_alternative_screen_) {
+      TerminalSend("\033[J");  // clear terminal output
+      TerminalSend("\033[H");  // move cursor to home position
     }
   }
 
@@ -1124,15 +1123,25 @@ void App::Draw(Component component) {
   }
 
   if (can_diff) {
-    // Incremental output: only changed cells, with absolute CUP addressing.
-    ToDiffString(internal_->output_buffer, internal_->previous_cells);
-    // Park cursor at bottom-right so the existing relative cursor logic
-    // (set_cursor_position_ / reset_cursor_position_) works unchanged.
-    internal_->output_buffer += "\x1B[";
-    internal_->output_buffer += std::to_string(dimy_);
-    internal_->output_buffer += ';';
-    internal_->output_buffer += std::to_string(dimx_);
-    internal_->output_buffer += 'H';
+    // Try incremental diff first. If too many cells changed, ToDiffString
+    // falls back to full ToString and returns false.
+    std::string diff_buffer;
+    const bool incremental =
+        ToDiffString(diff_buffer, internal_->previous_cells);
+    if (incremental) {
+      internal_->output_buffer += diff_buffer;
+      // Park cursor at bottom-right so the existing relative cursor logic
+      // (set_cursor_position_ / reset_cursor_position_) works unchanged.
+      internal_->output_buffer += "\x1B[";
+      internal_->output_buffer += std::to_string(dimy_);
+      internal_->output_buffer += ';';
+      internal_->output_buffer += std::to_string(dimx_);
+      internal_->output_buffer += 'H';
+    } else {
+      // Full repaint fallback — move cursor to top-left first.
+      ResetPosition(internal_->output_buffer, /*clear=*/false);
+      internal_->output_buffer += diff_buffer;
+    }
   } else {
     // Full repaint.
     ToString(internal_->output_buffer);
