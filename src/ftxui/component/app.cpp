@@ -195,7 +195,9 @@ void ftxui_on_resize(int columns, int rows) {
 #else  // POSIX (Linux & Mac)
 
 int CheckStdinReady(int fd) {
-  timeval tv = {0, 0};  // NOLINT
+  // Cygwin's select() on PTY fds may not reliably detect pending data
+  // with a zero timeout. Use 1ms to give the PTY layer time to signal.
+  timeval tv = {0, 1000};  // NOLINT
   fd_set fds;
   FD_ZERO(&fds);                                // NOLINT
   FD_SET(fd, &fds);                             // NOLINT
@@ -1053,7 +1055,13 @@ void App::Draw(Component component) {
   const bool resized = frame_count_ == 0 || (dimx != dimx_) || (dimy != dimy_);
 
   // Can we attempt incremental diff against the previous frame?
+  // Set FTXUI_NO_DIFF=1 to disable for debugging.
+  static const bool diff_disabled = [] {
+    const char* v = std::getenv("FTXUI_NO_DIFF");
+    return v && v[0] == '1';
+  }();
   const bool can_diff =
+      !diff_disabled &&
       !resized && !internal_->previous_cells.empty() &&
       static_cast<int>(internal_->previous_cells.size()) == dimy_ &&
       static_cast<int>(internal_->previous_cells[0].size()) == dimx_;
