@@ -536,14 +536,17 @@ bool Screen::ToDiffString(
 
   const int total = dimx_ * dimy_;
 
-  // First pass: count changed cells for the repaint-threshold check,
-  // and find the first dirty cell per row for the row-skip fast path.
-  // Both are O(cells) but touch only comparison fields (no allocation).
+  // First pass: count changed cells for the repaint-threshold check.
+  // Early-exit once the threshold is exceeded to avoid a full traversal.
+  const int threshold = total * kFullRepaintPercent / 100;
   int changed = 0;
   for (int y = 0; y < dimy_; ++y) {
     for (int x = 0; x < dimx_; ++x) {
       if (!CellsEqual(cells_[y][x], prev_cells[y][x])) {
-        ++changed;
+        if (++changed > threshold) {
+          ToString(ss);
+          return false;
+        }
       }
     }
   }
@@ -551,12 +554,6 @@ bool Screen::ToDiffString(
   // Nothing changed — skip all output.
   if (changed == 0) {
     return true;
-  }
-
-  // Too many changes — full linear repaint is cheaper than CUP-per-run.
-  if (changed * 100 > total * kFullRepaintPercent) {
-    ToString(ss);
-    return false;
   }
 
   // Second pass: emit incremental output.
@@ -586,16 +583,26 @@ bool Screen::ToDiffString(
         // Bridge: output the unchanged cells between cur_x and x.
         // The cursor is already on this row at cur_x, so just emit
         // the gap cells (they're visually correct — same as prev frame).
+        bool prev_fw = false;
         for (int bx = cur_x; bx < x; ++bx) {
           const Cell& cell = cells_[y][bx];
-          EmitCell(this, ss, last_style, cell);
+          if (!prev_fw) {
+            EmitCell(this, ss, last_style, cell);
+          }
+          if (cell.character.size() <= 1) {
+            prev_fw = false;
+          } else {
+            prev_fw = (string_width(cell.character) == 2);
+          }
         }
         need_position = false;
       }
 
       if (need_position) {
-        // Use relative move when on the adjacent row at column 0.
-        if (x == 0 && cur_y >= 0 && y == cur_y + 1) {
+        // Use relative move when on the adjacent row at column 0,
+        // but not on the last row where \n would scroll the terminal.
+        if (x == 0 && cur_y >= 0 && y == cur_y + 1 &&
+            y < dimy_ - 1) {
           ss += "\r\n";
         } else {
           EmitCUP(ss, y, x);

@@ -1125,11 +1125,10 @@ void App::Draw(Component component) {
   if (can_diff) {
     // Try incremental diff first. If too many cells changed, ToDiffString
     // falls back to full ToString and returns false.
-    std::string diff_buffer;
+    const auto mark = internal_->output_buffer.size();
     const bool incremental =
-        ToDiffString(diff_buffer, internal_->previous_cells);
+        ToDiffString(internal_->output_buffer, internal_->previous_cells);
     if (incremental) {
-      internal_->output_buffer += diff_buffer;
       // Park cursor at bottom-right so the existing relative cursor logic
       // (set_cursor_position_ / reset_cursor_position_) works unchanged.
       internal_->output_buffer += "\x1B[";
@@ -1139,8 +1138,12 @@ void App::Draw(Component component) {
       internal_->output_buffer += 'H';
     } else {
       // Full repaint fallback — move cursor to top-left first.
+      // Extract the ToString output that ToDiffString already wrote,
+      // prepend ResetPosition, then re-append.
+      std::string full_output(internal_->output_buffer, mark);
+      internal_->output_buffer.resize(mark);
       ResetPosition(internal_->output_buffer, /*clear=*/false);
-      internal_->output_buffer += diff_buffer;
+      internal_->output_buffer += full_output;
     }
   } else {
     // Full repaint.
