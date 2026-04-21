@@ -470,6 +470,83 @@ void Screen::ToString(std::string& ss) const {
   UpdateCellStyle(this, ss, *previous_cell_ref, default_cell);
 }
 
+// Frame-to-frame diff output: only emit cells that changed.
+bool Screen::ToDiffString(
+    std::string& ss,
+    const std::vector<std::vector<Cell>>& prev_cells) const {
+  // Validate dimensions match — caller should guarantee this.
+  if (static_cast<int>(prev_cells.size()) != dimy_ ||
+      (!prev_cells.empty() &&
+       static_cast<int>(prev_cells[0].size()) != dimx_)) {
+    ToString(ss);
+    return false;
+  }
+
+  // Compare cells — visual equality check.
+  auto cells_equal = [](const Cell& a, const Cell& b) -> bool {
+    return a.character == b.character &&
+           a.foreground_color == b.foreground_color &&
+           a.background_color == b.background_color &&
+           a.bold == b.bold &&
+           a.dim == b.dim &&
+           a.underlined == b.underlined &&
+           a.underlined_double == b.underlined_double &&
+           a.blink == b.blink &&
+           a.inverted == b.inverted &&
+           a.italic == b.italic &&
+           a.strikethrough == b.strikethrough &&
+           a.hyperlink == b.hyperlink;
+  };
+
+  const Cell default_cell;
+  const Cell* last_style = &default_cell;
+
+  for (int y = 0; y < dimy_; ++y) {
+    int x = 0;
+    while (x < dimx_) {
+      // Skip unchanged cells.
+      while (x < dimx_ && cells_equal(cells_[y][x], prev_cells[y][x])) {
+        ++x;
+      }
+      if (x >= dimx_) {
+        break;
+      }
+
+      // Position cursor at (x, y) using absolute CUP.
+      ss += "\x1B[";
+      ss += std::to_string(y + 1);
+      ss += ';';
+      ss += std::to_string(x + 1);
+      ss += 'H';
+
+      // Output this run of changed cells.
+      bool previous_fullwidth = false;
+      while (x < dimx_ && !cells_equal(cells_[y][x], prev_cells[y][x])) {
+        const Cell& cell = cells_[y][x];
+        if (!previous_fullwidth) {
+          UpdateCellStyle(this, ss, *last_style, cell);
+          last_style = &cell;
+          if (cell.character.empty()) {
+            ss += ' ';
+          } else {
+            ss += cell.character;
+          }
+        }
+        if (cell.character.size() <= 1) {
+          previous_fullwidth = false;
+        } else {
+          previous_fullwidth = (string_width(cell.character) == 2);
+        }
+        ++x;
+      }
+    }
+  }
+
+  // Reset style to default.
+  UpdateCellStyle(this, ss, *last_style, default_cell);
+  return true;
+}
+
 // Print the Screen to the terminal.
 void Screen::Print() const {
   std::cout << ToString() << '\0' << std::flush;

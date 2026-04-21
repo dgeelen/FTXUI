@@ -157,6 +157,9 @@ struct App::Internal {
   ThrottledRequest cursor_position_request;
   ThrottledRequest cursor_shape_request;
 
+  // Previous frame's cells for frame-to-frame diff in Draw().
+  std::vector<std::vector<Cell>> previous_cells;
+
   explicit Internal(App* app, std::function<void(Event)> out);
 };
 
@@ -1048,18 +1051,25 @@ void App::Draw(Component component) {
   TerminalSend("\033[?25l");
 
   const bool resized = frame_count_ == 0 || (dimx != dimx_) || (dimy != dimy_);
-  TerminalSend(ResetCursorPosition());
 
-  if (frame_count_ != 0) {
-    // Reset the cursor position to the lower left corner to start drawing the
-    // new frame.
-    ResetPosition(internal_->output_buffer, resized);
+  // Can we do incremental diff against the previous frame?
+  const bool can_diff =
+      !resized && !internal_->previous_cells.empty() &&
+      static_cast<int>(internal_->previous_cells.size()) == dimy_ &&
+      static_cast<int>(internal_->previous_cells[0].size()) == dimx_;
 
-    // If the terminal width decrease, the terminal emulator will start wrapping
-    // lines and make the display dirty. We should clear it completely.
-    if ((dimx < dimx_) && !use_alternative_screen_) {
-      TerminalSend("\033[J");  // clear terminal output
-      TerminalSend("\033[H");  // move cursor to home position
+  if (!can_diff) {
+    // Full repaint path: undo previous cursor positioning and move to
+    // top-left before overwriting the entire screen.
+    TerminalSend(ResetCursorPosition());
+
+    if (frame_count_ != 0) {
+      ResetPosition(internal_->output_buffer, resized);
+
+      if ((dimx < dimx_) && !use_alternative_screen_) {
+        TerminalSend("\033[J");  // clear terminal output
+        TerminalSend("\033[H");  // move cursor to home position
+      }
     }
   }
 
@@ -1070,6 +1080,7 @@ void App::Draw(Component component) {
     cells_ = std::vector<std::vector<Cell>>(dimy, std::vector<Cell>(dimx));
     cursor_.x = dimx_ - 1;
     cursor_.y = dimy_ - 1;
+    internal_->previous_cells.clear();
   }
 
   // Periodically request the terminal emulator the frame position relative to
@@ -1112,9 +1123,26 @@ void App::Draw(Component component) {
     }
   }
 
-  ToString(internal_->output_buffer);
+  if (can_diff) {
+    // Incremental output: only changed cells, with absolute CUP addressing.
+    ToDiffString(internal_->output_buffer, internal_->previous_cells);
+    // Park cursor at bottom-right so the existing relative cursor logic
+    // (set_cursor_position_ / reset_cursor_position_) works unchanged.
+    internal_->output_buffer += "\x1B[";
+    internal_->output_buffer += std::to_string(dimy_);
+    internal_->output_buffer += ';';
+    internal_->output_buffer += std::to_string(dimx_);
+    internal_->output_buffer += 'H';
+  } else {
+    // Full repaint.
+    ToString(internal_->output_buffer);
+  }
+
   TerminalSend(set_cursor_position_);
   TerminalFlush();
+
+  // Save current frame for next diff, then clear for the next Render pass.
+  internal_->previous_cells = cells_;
 
   Clear();
   frame_valid_ = true;

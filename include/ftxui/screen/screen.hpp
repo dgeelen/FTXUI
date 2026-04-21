@@ -36,6 +36,13 @@ class Screen : public Surface {
   std::string ToString() const;
   void ToString(std::string& ss) const;
 
+  // Frame-to-frame diff: output only cells that changed since prev_cells.
+  // Returns true if incremental output was used, false if it fell back to
+  // full repaint (in which case the caller must have already issued
+  // ResetPosition to move the cursor to the top-left).
+  bool ToDiffString(std::string& ss,
+                    const std::vector<std::vector<Cell>>& prev_cells) const;
+
   // Print the Screen on to the terminal.
   void Print() const;
 
