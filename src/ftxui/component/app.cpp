@@ -632,9 +632,6 @@ void App::Install() {
   // ensure it is fully applied:
   on_exit_functions.emplace([this] { TerminalFlush(); });
 
-  // Request the terminal to report the current cursor shape. We will restore it
-  // on exit.
-  RequestCursorShape();
   on_exit_functions.emplace([this] {
     TerminalSend("\033[?25h");  // Enable cursor.
     TerminalSend("\033[" + std::to_string(cursor_reset_shape_) + " q");
@@ -742,7 +739,16 @@ void App::Install() {
     enable({
         DECMode::kAlternateScreen,
     });
+    // Some terminals (notably ConEmu via Cygwin PTY) don't switch screen
+    // buffers mid-write — content that follows \x1B[?1049h in the same
+    // write() may land on the primary screen.  Flush the switch, then
+    // round-trip a DSR query to guarantee it has taken effect before any
+    // content is written.
+    SyncWithTerminal();
   }
+
+  // Query the current cursor shape so we can restore it on exit.
+  RequestCursorShape();
 
   disable({
       // DECMode::kCursor,
@@ -756,8 +762,8 @@ void App::Install() {
     enable({DECMode::kMouseSgrExtMode});
   }
 
-  // After installing the new configuration, flush it to the terminal to
-  // ensure it is fully applied:
+  // Flush mode changes so the terminal is fully configured before the
+  // event loop starts reading input.
   TerminalFlush();
 
   quit_ = false;
@@ -1154,7 +1160,12 @@ void App::Draw(Component component) {
       internal_->output_buffer += full_output;
     }
   } else {
-    // Full repaint.
+    // On the first frame there is no prior cursor position to reset from,
+    // so home the cursor explicitly.  The clear ensures no stale content
+    // from the alt-screen switch is visible.
+    if (frame_count_ == 0 && use_alternative_screen_) {
+      internal_->output_buffer += "\x1B[2J\x1B[H";
+    }
     ToString(internal_->output_buffer);
   }
 
@@ -1186,6 +1197,39 @@ void App::RequestCursorShape() {
   internal_->cursor_shape_request.Request();
 }
 
+// private — Flush pending output and round-trip a Device Status Report (DSR)
+// cursor-position query to synchronize with the terminal.  Returns once the
+// terminal responds (or after a 100 ms timeout).  This guarantees the terminal
+// has processed everything written so far — used after the alt-screen switch
+// so that subsequent content lands in the correct screen buffer.
+void App::SyncWithTerminal() {
+  TerminalSend("\x1B[6n");  // DSR — request cursor position
+  TerminalFlush();
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+  timeval tv = {0, 100000};  // 100 ms  // NOLINT
+  fd_set fds;
+  char buf[32];
+  bool got_response = false;
+  while (!got_response) {
+    FD_ZERO(&fds);
+    FD_SET(tty_fd_, &fds);
+    if (select(tty_fd_ + 1, &fds, nullptr, nullptr, &tv) <= 0) {
+      break;  // timeout or error
+    }
+    const auto n = read(tty_fd_, buf, sizeof(buf));
+    if (n <= 0) {
+      break;
+    }
+    for (int i = 0; i < n; ++i) {
+      if (buf[i] == 'R') {
+        got_response = true;
+        break;
+      }
+    }
+  }
+#endif
+}
+
 // private
 void App::TerminalSend(std::string_view s) {
   internal_->output_buffer += s;
@@ -1195,7 +1239,28 @@ void App::TerminalSend(std::string_view s) {
 void App::TerminalFlush() {
   // Emscripten doesn't implement flush. We interpret zero as flush.
   internal_->output_buffer += '\0';
+
+  // Bypass std::cout: its line-buffered mode flushes on every \n, turning
+  // one frame into many small write() calls.  A direct write keeps each
+  // flush as few syscalls as possible.
+#if defined(__EMSCRIPTEN__)
   std::cout << internal_->output_buffer << std::flush;
+#else
+  const char* p = internal_->output_buffer.data();
+  size_t remaining = internal_->output_buffer.size();
+  while (remaining > 0) {
+    const auto n = write(STDOUT_FILENO, p, remaining);
+    if (n > 0) {
+      p += n;
+      remaining -= static_cast<size_t>(n);
+    } else if (n < 0 && errno == EINTR) {
+      continue;
+    } else {
+      break;
+    }
+  }
+#endif
+
   internal_->output_buffer.clear();
 }
 

@@ -105,6 +105,7 @@ class App : public Screen {
 
   void RequestCursorPosition(bool force = false);
   void RequestCursorShape();
+  void SyncWithTerminal();
 
   void TerminalSend(std::string_view);
   void TerminalFlush();
