@@ -736,15 +736,29 @@ void App::Install() {
   };
 
   if (use_alternative_screen_) {
-    enable({
-        DECMode::kAlternateScreen,
-    });
     // Some terminals (notably ConEmu via Cygwin PTY) don't switch screen
-    // buffers mid-write — content that follows \x1B[?1049h in the same
-    // write() may land on the primary screen.  Flush the switch, then
-    // round-trip a DSR query to guarantee it has taken effect before any
-    // content is written.
+    // buffers mid-write — content in the same write() as the buffer-switch
+    // sequence may land on the wrong buffer, or prevent the terminal from
+    // properly saving/restoring screen contents.  The switch must be the
+    // sole content of its write(), followed by a DSR round-trip to confirm
+    // the terminal has processed it before any further output.
+    TerminalSend(Set({DECMode::kAlternateScreen}));
+    TerminalFlush();
     SyncWithTerminal();
+    on_exit_functions.emplace([this] {
+      // Flush preceding mode restores (mouse-off, line-wrap-on, etc.)
+      // then DSR-sync so the terminal has fully processed them before
+      // the buffer switch.
+      TerminalFlush();
+      SyncWithTerminal();
+      // Alt-screen-off alone in its own write.  No trailing DSR here —
+      // the next terminal write (cursor restore) is separated by the
+      // termios restore and several stack unwinds, so coalescing isn't
+      // possible, and a DSR response this late can leak into the shell's
+      // input buffer.
+      TerminalSend(Reset({DECMode::kAlternateScreen}));
+      TerminalFlush();
+    });
   }
 
   // Query the current cursor shape so we can restore it on exit.
@@ -1237,15 +1251,14 @@ void App::TerminalSend(std::string_view s) {
 
 // private
 void App::TerminalFlush() {
+#if defined(__EMSCRIPTEN__)
   // Emscripten doesn't implement flush. We interpret zero as flush.
   internal_->output_buffer += '\0';
-
+  std::cout << internal_->output_buffer << std::flush;
+#else
   // Bypass std::cout: its line-buffered mode flushes on every \n, turning
   // one frame into many small write() calls.  A direct write keeps each
   // flush as few syscalls as possible.
-#if defined(__EMSCRIPTEN__)
-  std::cout << internal_->output_buffer << std::flush;
-#else
   const char* p = internal_->output_buffer.data();
   size_t remaining = internal_->output_buffer.size();
   while (remaining > 0) {
