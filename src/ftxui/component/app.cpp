@@ -946,8 +946,10 @@ void App::HandleTask(Component component, Task& task) {
         RecordSignal(SIGTSTP);
       }
 #endif
-      
-      frame_valid_ = false;
+
+      if (handled) {
+        frame_valid_ = false;
+      }
       return;
     }
 
@@ -1023,9 +1025,10 @@ bool App::HandleSelection(bool handled, Event event) {
       selection_data_.end_x = mouse.x;
       selection_data_.end_y = mouse.y;
       selection_data_.empty = false;
+      return true;
     }
 
-    return true;
+    return false;
   }
 
   if (mouse.motion == Mouse::Released) {
