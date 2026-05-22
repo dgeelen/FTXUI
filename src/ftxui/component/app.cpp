@@ -1426,7 +1426,11 @@ size_t App::FetchTerminalEvents() {
 
   // Read chars from the terminal.
   std::array<char, 128> out{};
-  size_t l = read(tty_fd_, out.data(), out.size());
+  const ssize_t n = read(tty_fd_, out.data(), out.size());
+  if (n <= 0) {
+    return 0;
+  }
+  const auto l = static_cast<size_t>(n);
 
   // Convert the chars to events.
   for (size_t i = 0; i < l; ++i) {
