@@ -1258,6 +1258,20 @@ void App::TerminalFlush() {
   // Emscripten doesn't implement flush. We interpret zero as flush.
   internal_->output_buffer += '\0';
   std::cout << internal_->output_buffer << std::flush;
+#elif defined(_WIN32)
+  // _write + _fileno: the MSVC equivalent of POSIX write(STDOUT_FILENO).
+  const char* p = internal_->output_buffer.data();
+  size_t remaining = internal_->output_buffer.size();
+  const int fd = _fileno(stdout);
+  while (remaining > 0) {
+    const auto n = _write(fd, p, static_cast<unsigned int>(remaining));
+    if (n > 0) {
+      p += n;
+      remaining -= static_cast<size_t>(n);
+    } else {
+      break;
+    }
+  }
 #else
   // Bypass std::cout: its line-buffered mode flushes on every \n, turning
   // one frame into many small write() calls.  A direct write keeps each
