@@ -434,10 +434,12 @@ TerminalInputParser::Output TerminalInputParser::ParseMouse(  // NOLINT
   const bool is_control = arguments[0] & 16;      // NOLINT
   const bool is_move    = arguments[0] & 32;      // NOLINT
   const bool is_wheel   = arguments[0] & 64;      // NOLINT
+  const bool is_extra   = arguments[0] & 128;     // NOLINT
   // clang-format on
 
   output.mouse.motion = is_move ? Mouse::Moved : Mouse::Motion(pressed);
-  output.mouse.button = is_wheel ? Mouse::Button(Mouse::WheelUp + button)  //
+  output.mouse.button = is_extra ? Mouse::Button(Mouse::Button8 + button)
+                      : is_wheel ? Mouse::Button(Mouse::WheelUp + button)
                                  : Mouse::Button(button);
   output.mouse.shift = is_shift;
   output.mouse.meta = is_meta;

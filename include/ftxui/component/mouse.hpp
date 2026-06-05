@@ -18,6 +18,10 @@ struct Mouse {
     WheelDown = 5,
     WheelLeft = 6,   /// Supported terminal only.
     WheelRight = 7,  /// Supported terminal only.
+    Button8 = 8,     /// Back / side button. Supported terminal only.
+    Button9 = 9,     /// Forward / side button. Supported terminal only.
+    Button10 = 10,   /// Extra side button. Supported terminal only.
+    Button11 = 11,   /// Extra side button. Supported terminal only.
   };
 
   enum Motion {
