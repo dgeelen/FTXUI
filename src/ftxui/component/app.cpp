@@ -9,6 +9,7 @@
 #include <csignal>  // for signal, SIGTSTP, SIGABRT, SIGWINCH, raise, SIGFPE, SIGILL, SIGINT, SIGSEGV, SIGTERM, __sighandler_t, size_t
 #include <cstdint>
 #include <cstdio>                    // for fileno, stdin
+#include <fstream>
 #include <ftxui/component/task.hpp>  // for Task, Closure, AnimationTask
 #include <ftxui/screen/screen.hpp>  // for Cell, Screen::Cursor, Screen, Screen::Cursor::Hidden
 #include <functional>        // for function
@@ -1153,6 +1154,7 @@ void App::Draw(Component component) {
     }
   }
 
+  const char* render_path = "unknown";
   if (can_diff) {
     // Try incremental diff first. If too many cells changed, ToDiffString
     // falls back to full ToString and returns false.
@@ -1160,6 +1162,7 @@ void App::Draw(Component component) {
     const bool incremental =
         ToDiffString(internal_->output_buffer, internal_->previous_cells);
     if (incremental) {
+      render_path = "incremental";
       // Park cursor at bottom-right so the existing relative cursor logic
       // (set_cursor_position_ / reset_cursor_position_) works unchanged.
       internal_->output_buffer += "\x1B[";
@@ -1168,6 +1171,7 @@ void App::Draw(Component component) {
       internal_->output_buffer += std::to_string(dimx_);
       internal_->output_buffer += 'H';
     } else {
+      render_path = "diff_fallback";
       // Full repaint fallback — move cursor to top-left first.
       // Extract the ToString output that ToDiffString already wrote,
       // prepend ResetPosition, then re-append.
@@ -1177,6 +1181,7 @@ void App::Draw(Component component) {
       internal_->output_buffer += full_output;
     }
   } else {
+    render_path = "full";
     // On the first frame there is no prior cursor position to reset from,
     // so home the cursor explicitly.  The clear ensures no stale content
     // from the alt-screen switch is visible.
@@ -1184,6 +1189,17 @@ void App::Draw(Component component) {
       internal_->output_buffer += "\x1B[2J\x1B[H";
     }
     ToString(internal_->output_buffer);
+  }
+
+  if (!dump_frames_dir_.empty()) {
+    dump_frame_meta_ = "frame=" + std::to_string(frame_count_) +
+                       "\npath=" + render_path +
+                       "\ndimx=" + std::to_string(dimx_) +
+                       "\ndimy=" + std::to_string(dimy_) +
+                       "\ncursor_x=" + std::to_string(cursor_.x) +
+                       "\ncursor_y=" + std::to_string(cursor_.y) +
+                       "\nresized=" + std::to_string(resized) +
+                       "\n";
   }
 
   TerminalSend(set_cursor_position_);
@@ -1291,7 +1307,31 @@ void App::TerminalFlush() {
   }
 #endif
 
+  if (!dump_frames_dir_.empty()) {
+    auto base = dump_frames_dir_ + "/frame-" + std::to_string(dump_frame_seq_);
+    {
+      std::ofstream f(base + ".bin", std::ios::binary);
+      if (f) {
+        f.write(internal_->output_buffer.data(),
+                static_cast<std::streamsize>(internal_->output_buffer.size()));
+      }
+    }
+    if (!dump_frame_meta_.empty()) {
+      std::ofstream f(base + ".meta");
+      if (f) {
+        f << dump_frame_meta_;
+      }
+    }
+    dump_frame_seq_++;
+  }
+  dump_frame_meta_.clear();
+
   internal_->output_buffer.clear();
+}
+
+void App::DumpFrames(std::string dir) {
+  dump_frames_dir_ = std::move(dir);
+  dump_frame_seq_ = 0;
 }
 
 /// @brief Return a function to exit the main loop.

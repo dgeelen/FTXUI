@@ -65,6 +65,11 @@ class App : public Screen {
 
   CapturedMouse CaptureMouse();
 
+  // Debug: toggle dumping raw ANSI output of every frame to `dir/frame-N.bin`
+  // and metadata to `dir/frame-N.meta`. Call with a directory path to start,
+  // empty string to stop.
+  void DumpFrames(std::string dir);
+
   // Decorate a function. The outputted one will execute similarly to the
   // inputted one, but with the currently active app terminal hooks
   // temporarily uninstalled.
@@ -148,6 +153,10 @@ class App : public Screen {
   bool previous_frame_resized_ = false;
 
   bool frame_valid_ = false;
+
+  std::string dump_frames_dir_;
+  int dump_frame_seq_ = 0;
+  std::string dump_frame_meta_;
 
   bool force_handle_ctrl_c_ = true;
   bool force_handle_ctrl_z_ = true;
