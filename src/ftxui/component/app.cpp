@@ -1425,6 +1425,34 @@ size_t App::FetchTerminalEvents() {
         if (key_event.bKeyDown == FALSE) {
           continue;
         }
+        // Distinguish modified Enter (Shift/Ctrl/Alt+Enter) from a plain Enter.
+        // Under ENABLE_VIRTUAL_TERMINAL_INPUT, conhost delivers Enter as a bare
+        // CR in uChar.UnicodeChar and zeroes wVirtualKeyCode / dwControlKeyState,
+        // so the record carries no usable modifier info. Query the physical key
+        // state directly instead, and synthesize the kitty keyboard sequence
+        // "ESC [ 13 ; <mod> u" so callers can tell them apart. Plain Enter
+        // (mod == 0) falls through to the normal character path below.
+        if (key_event.uChar.UnicodeChar == L'\r' ||
+            key_event.uChar.UnicodeChar == L'\n' ||
+            key_event.wVirtualKeyCode == VK_RETURN) {
+          int mod = 0;
+          if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+            mod |= 1;
+          }
+          if (GetAsyncKeyState(VK_MENU) & 0x8000) {  // Alt
+            mod |= 2;
+          }
+          if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+            mod |= 4;
+          }
+          if (mod != 0) {
+            const std::string seq = "\x1b[13;" + std::to_string(mod + 1) + "u";
+            for (char it : seq) {
+              internal_->terminal_input_parser.Add(it);
+            }
+            continue;
+          }
+        }
         const wchar_t wc = key_event.uChar.UnicodeChar;
         wstring += wc;
         if (wc >= 0xd800 && wc <= 0xdbff) {
