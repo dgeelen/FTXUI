@@ -690,6 +690,8 @@ void App::Install() {
 
   struct termios terminal;  // NOLINT
   tcgetattr(tty_fd_, &terminal);
+  original_c_oflag_ = static_cast<unsigned>(terminal.c_oflag);
+
   on_exit_functions.emplace([terminal = terminal, tty_fd_ = tty_fd_] {
     tcsetattr(tty_fd_, TCSANOW, &terminal);
   });
@@ -715,6 +717,8 @@ void App::Install() {
                                 // - C-d => QUIT
   terminal.c_lflag &= ~IEXTEN;  // Disable extended input processing
   terminal.c_cflag |= CS8;      // 8 bits per byte
+
+  terminal.c_oflag &= ~OPOST;  // Disable output processing (ONLCR, OCRNL, …)
 
   terminal.c_cc[VMIN] = 0;   // Minimum number of characters for non-canonical
                              // read.
@@ -911,6 +915,23 @@ void App::HandleTask(Component component, Task& task) {
     if constexpr (std::is_same_v<T, Event>) {
 
       if (arg.is_cursor_position()) {
+        if (diag_expect_x_ >= 0 && !dump_frames_dir_.empty()) {
+          const int ax = arg.cursor_x();
+          const int ay = arg.cursor_y();
+          const bool match = (ax == diag_expect_x_ && ay == diag_expect_y_);
+          auto path = dump_frames_dir_ + "/diag.log";
+          if (auto* fp = std::fopen(path.c_str(), "a")) {
+            std::fprintf(fp,
+                "DSR frame=%llu: expected=(%d,%d) actual=(%d,%d)%s\n",
+                static_cast<unsigned long long>(diag_frame_),
+                diag_expect_x_, diag_expect_y_,
+                ax, ay,
+                match ? "" : " *** DESYNC ***");
+            std::fclose(fp);
+          }
+          diag_expect_x_ = -1;
+          return;
+        }
         cursor_x_ = arg.cursor_x();
         cursor_y_ = arg.cursor_y();
         internal_->cursor_position_request.OnReply();
@@ -1179,6 +1200,13 @@ void App::Draw(Component component) {
       internal_->output_buffer.resize(mark);
       ResetPosition(internal_->output_buffer, /*clear=*/false);
       internal_->output_buffer += full_output;
+      // Park cursor at bottom-right via CUP so the position is
+      // deterministic regardless of pending-wrap behavior.
+      internal_->output_buffer += "\x1B[";
+      internal_->output_buffer += std::to_string(dimy_);
+      internal_->output_buffer += ';';
+      internal_->output_buffer += std::to_string(dimx_);
+      internal_->output_buffer += 'H';
     }
   } else {
     render_path = "full";
@@ -1189,6 +1217,13 @@ void App::Draw(Component component) {
       internal_->output_buffer += "\x1B[2J\x1B[H";
     }
     ToString(internal_->output_buffer);
+    // Park cursor at bottom-right via CUP so the position is
+    // deterministic regardless of pending-wrap behavior.
+    internal_->output_buffer += "\x1B[";
+    internal_->output_buffer += std::to_string(dimy_);
+    internal_->output_buffer += ';';
+    internal_->output_buffer += std::to_string(dimx_);
+    internal_->output_buffer += 'H';
   }
 
   if (!dump_frames_dir_.empty()) {
@@ -1204,6 +1239,16 @@ void App::Draw(Component component) {
 
   TerminalSend(set_cursor_position_);
   TerminalFlush();
+
+  // DSR diagnostic: query the terminal's actual cursor position after each
+  // frame and compare with the expected position in HandleTask.
+  if (!dump_frames_dir_.empty()) {
+    diag_expect_x_ = cursor_.x + 1;  // CPR is 1-based
+    diag_expect_y_ = cursor_.y + 1;
+    diag_frame_ = frame_count_;
+    TerminalSend("\x1b[6n");
+    TerminalFlush();
+  }
 
   // Save current frame for next diff, then clear for the next Render pass.
   internal_->previous_cells = cells_;
@@ -1332,6 +1377,14 @@ void App::TerminalFlush() {
 void App::DumpFrames(std::string dir) {
   dump_frames_dir_ = std::move(dir);
   dump_frame_seq_ = 0;
+
+  if (!dump_frames_dir_.empty()) {
+    auto path = dump_frames_dir_ + "/diag.log";
+    if (auto* fp = std::fopen(path.c_str(), "a")) {
+      std::fprintf(fp, "original_c_oflag=0x%x\n", original_c_oflag_);
+      std::fclose(fp);
+    }
+  }
 }
 
 /// @brief Return a function to exit the main loop.

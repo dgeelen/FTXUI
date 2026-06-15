@@ -158,6 +158,14 @@ class App : public Screen {
   int dump_frame_seq_ = 0;
   std::string dump_frame_meta_;
 
+  // DSR diagnostic: when frame dumps are active, a DSR query is sent after
+  // each flush and the CPR response is compared against the expected cursor.
+  int diag_expect_x_ = -1;
+  int diag_expect_y_ = -1;
+  std::uint64_t diag_frame_ = 0;
+
+  unsigned original_c_oflag_ = 0;
+
   bool force_handle_ctrl_c_ = true;
   bool force_handle_ctrl_z_ = true;
 
