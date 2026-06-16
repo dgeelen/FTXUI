@@ -163,6 +163,7 @@ class App : public Screen {
   int diag_expect_x_ = -1;
   int diag_expect_y_ = -1;
   std::uint64_t diag_frame_ = 0;
+  int diag_pending_ = 0;
 
   unsigned original_c_oflag_ = 0;
 

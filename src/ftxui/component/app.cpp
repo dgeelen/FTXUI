@@ -915,21 +915,24 @@ void App::HandleTask(Component component, Task& task) {
     if constexpr (std::is_same_v<T, Event>) {
 
       if (arg.is_cursor_position()) {
-        if (diag_expect_x_ >= 0 && !dump_frames_dir_.empty()) {
+        if (diag_pending_ > 0) {
+          diag_pending_--;
           const int ax = arg.cursor_x();
           const int ay = arg.cursor_y();
-          const bool match = (ax == diag_expect_x_ && ay == diag_expect_y_);
-          auto path = dump_frames_dir_ + "/diag.log";
-          if (auto* fp = std::fopen(path.c_str(), "a")) {
-            std::fprintf(fp,
-                "DSR frame=%llu: expected=(%d,%d) actual=(%d,%d)%s\n",
-                static_cast<unsigned long long>(diag_frame_),
-                diag_expect_x_, diag_expect_y_,
-                ax, ay,
-                match ? "" : " *** DESYNC ***");
-            std::fclose(fp);
+          if (!dump_frames_dir_.empty()) {
+            const bool match = (ax == diag_expect_x_ &&
+                                ay == diag_expect_y_);
+            auto path = dump_frames_dir_ + "/diag.log";
+            if (auto* fp = std::fopen(path.c_str(), "a")) {
+              std::fprintf(fp,
+                  "DSR frame=%llu: expected=(%d,%d) actual=(%d,%d)%s\n",
+                  static_cast<unsigned long long>(diag_frame_),
+                  diag_expect_x_, diag_expect_y_,
+                  ax, ay,
+                  match ? "" : " *** DESYNC ***");
+              std::fclose(fp);
+            }
           }
-          diag_expect_x_ = -1;
           return;
         }
         cursor_x_ = arg.cursor_x();
@@ -1246,6 +1249,7 @@ void App::Draw(Component component) {
     diag_expect_x_ = cursor_.x + 1;  // CPR is 1-based
     diag_expect_y_ = cursor_.y + 1;
     diag_frame_ = frame_count_;
+    diag_pending_++;
     TerminalSend("\x1b[6n");
     TerminalFlush();
   }
