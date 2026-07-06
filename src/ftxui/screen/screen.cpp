@@ -578,6 +578,7 @@ bool Screen::ToDiffString(
       // Found a dirty cell at (x, y). Before emitting a CUP, check if
       // bridging a small gap from the current cursor position is cheaper.
       bool need_position = true;
+      bool bridged_prev_fw = false;
       if (cur_y == y && cur_x >= 0 && cur_x <= x &&
           (x - cur_x) <= kMaxBridgeGap) {
         // Bridge: output the unchanged cells between cur_x and x.
@@ -595,6 +596,7 @@ bool Screen::ToDiffString(
             prev_fw = (string_width(cell.character) == 2);
           }
         }
+        bridged_prev_fw = prev_fw;
         need_position = false;
       }
 
@@ -610,12 +612,12 @@ bool Screen::ToDiffString(
       }
 
       // Output this run of dirty cells, bridging small interior gaps.
-      bool previous_fullwidth = false;
+      bool previous_fullwidth = bridged_prev_fw;
       while (x < dimx_) {
         // Check if this cell is dirty.
         bool dirty = !CellsEqual(cells_[y][x], prev_cells[y][x]);
 
-        if (!dirty) {
+        if (!dirty && !previous_fullwidth) {
           // Look ahead: is the next dirty cell close enough to bridge?
           int next_dirty = x + 1;
           while (next_dirty < dimx_ &&

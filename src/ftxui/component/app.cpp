@@ -915,6 +915,29 @@ void App::HandleTask(Component component, Task& task) {
     if constexpr (std::is_same_v<T, Event>) {
 
       if (arg.is_cursor_position()) {
+        // Mid-frame DSR responses arrive first (injected after
+        // ResetPosition, before ToString).
+        if (diag_mid_pending_ > 0) {
+          diag_mid_pending_--;
+          const int ax = arg.cursor_x();
+          const int ay = arg.cursor_y();
+          if (!dump_frames_dir_.empty()) {
+            const bool match = (ax == diag_mid_expect_x_ &&
+                                ay == diag_mid_expect_y_);
+            auto path = dump_frames_dir_ + "/diag.log";
+            if (auto* fp = std::fopen(path.c_str(), "a")) {
+              std::fprintf(fp,
+                  "DSR-mid frame=%llu: expected=(%d,%d) actual=(%d,%d)%s\n",
+                  static_cast<unsigned long long>(diag_frame_),
+                  diag_mid_expect_x_, diag_mid_expect_y_,
+                  ax, ay,
+                  match ? "" : " *** DESYNC ***");
+              std::fclose(fp);
+            }
+          }
+          return;
+        }
+        // End-of-frame DSR responses.
         if (diag_pending_ > 0) {
           diag_pending_--;
           const int ax = arg.cursor_x();
@@ -1202,6 +1225,14 @@ void App::Draw(Component component) {
       std::string full_output(internal_->output_buffer, mark);
       internal_->output_buffer.resize(mark);
       ResetPosition(internal_->output_buffer, /*clear=*/false);
+      // Mid-frame DSR: probe cursor right after ResetPosition to
+      // verify it landed at (1,1) before ToString overwrites the screen.
+      if (!dump_frames_dir_.empty()) {
+        internal_->output_buffer += "\x1b[6n";
+        diag_mid_expect_x_ = 1;
+        diag_mid_expect_y_ = 1;
+        diag_mid_pending_++;
+      }
       internal_->output_buffer += full_output;
       // Park cursor at bottom-right via CUP so the position is
       // deterministic regardless of pending-wrap behavior.

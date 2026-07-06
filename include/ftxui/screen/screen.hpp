@@ -84,9 +84,16 @@ class Screen : public Surface {
   const SelectionStyle& GetSelectionStyle() const;
   void SetSelectionStyle(SelectionStyle decorator);
 
+  void SetWcwidthQuirk(bool v) { wcwidth_quirk_ = v; }
+  bool GetWcwidthQuirk() const { return wcwidth_quirk_; }
+
  protected:
   Cursor cursor_;
   std::vector<std::string> hyperlinks_ = {""};
+
+  // Emit a space for BMP wide-char continuation cells so terminals that
+  // advance the cursor by 1 per wchar_t (instead of 2) stay in sync.
+  bool wcwidth_quirk_ = false;
 
   // The current selection style. This is overridden by various dom elements.
   SelectionStyle selection_style_ = [](Cell& cell) { cell.inverted ^= true; };
