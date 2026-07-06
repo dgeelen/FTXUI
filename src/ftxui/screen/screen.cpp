@@ -457,8 +457,6 @@ void Screen::ToString(std::string& ss) const {
         } else {
           ss += cell.character;
         }
-      } else if (wcwidth_quirk_) {
-        ss += ' ';
       }
       if (cell.character.size() <= 1) {
         previous_fullwidth = false;
@@ -488,28 +486,6 @@ bool CellsEqual(const Cell& a, const Cell& b) {
          a.italic == b.italic &&
          a.strikethrough == b.strikethrough &&
          a.hyperlink == b.hyperlink;
-}
-
-// After skipping the continuation cell of a width-2 character, re-sync the
-// cursor for SMP codepoints (4-byte UTF-8).  Terminals that lack SMP emoji
-// font glyphs render them as narrow, drifting the cursor by 1 per character.
-void SyncAfterWideChar(std::string& ss,
-                       const std::vector<Cell>& row,
-                       int y,
-                       int cont_x) {
-  if (cont_x <= 0) {
-    return;
-  }
-  const Cell& base = row[cont_x - 1];
-  if (!base.character.empty() &&
-      static_cast<unsigned char>(base.character[0]) >= 0xF0) {
-    // 4-byte UTF-8 lead byte → SMP codepoint (U+10000+).
-    ss += "\x1B[";
-    ss += std::to_string(y + 1);
-    ss += ';';
-    ss += std::to_string(cont_x + 1 + 1);  // column after continuation
-    ss += 'H';
-  }
 }
 
 // Emit an absolute CUP sequence: \x1B[{row};{col}H
@@ -599,16 +575,6 @@ bool Screen::ToDiffString(
         break;
       }
 
-      // If we landed on the trailing cell of a width-2 character, back up
-      // to the base cell.  Positioning the cursor into a wide character's
-      // second column is destructive: the terminal erases the glyph.
-      if (x > 0 && cells_[y][x].character.empty()) {
-        const Cell& base = cells_[y][x - 1];
-        if (base.character.size() > 1 && string_width(base.character) == 2) {
-          --x;
-        }
-      }
-
       // Found a dirty cell at (x, y). Before emitting a CUP, check if
       // bridging a small gap from the current cursor position is cheaper.
       bool need_position = true;
@@ -624,9 +590,6 @@ bool Screen::ToDiffString(
             EmitCell(this, ss, last_style, cell);
           }
           if (cell.character.size() <= 1) {
-            if (prev_fw) {
-              SyncAfterWideChar(ss, cells_[y], y, bx);
-            }
             prev_fw = false;
           } else {
             prev_fw = (string_width(cell.character) == 2);
@@ -674,13 +637,8 @@ bool Screen::ToDiffString(
         const Cell& cell = cells_[y][x];
         if (!previous_fullwidth) {
           EmitCell(this, ss, last_style, cell);
-        } else if (wcwidth_quirk_) {
-          ss += ' ';
         }
         if (cell.character.size() <= 1) {
-          if (previous_fullwidth) {
-            SyncAfterWideChar(ss, cells_[y], y, x);
-          }
           previous_fullwidth = false;
         } else {
           previous_fullwidth = (string_width(cell.character) == 2);
