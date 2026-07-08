@@ -172,6 +172,111 @@ TEST(Event, MouseReporting) {
   EXPECT_EQ(12, received_events[0].cursor_y());
 }
 
+TEST(Event, MouseX10Moved) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('M');
+  parser.Add(32 + 35);  // no button + motion flag
+  parser.Add(32 + 12);  // column
+  parser.Add(32 + 42);  // row
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(Mouse::None, received_events[0].mouse().button);
+  EXPECT_EQ(12, received_events[0].mouse().x);
+  EXPECT_EQ(42, received_events[0].mouse().y);
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
+}
+
+TEST(Event, MouseX10LeftPressed) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('M');
+  parser.Add(32 + 0);   // left button pressed
+  parser.Add(32 + 12);  // column
+  parser.Add(32 + 42);  // row
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(Mouse::Left, received_events[0].mouse().button);
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Pressed);
+}
+
+TEST(Event, MouseX10Released) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('M');
+  parser.Add(32 + 3);   // release (button not transmitted)
+  parser.Add(32 + 12);  // column
+  parser.Add(32 + 42);  // row
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Released);
+}
+
+// The payload of an X10 report is raw bytes, not text; it must survive being
+// split across reads without producing character events.
+TEST(Event, MouseX10SplitAcrossReads) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('M');
+  EXPECT_TRUE(received_events.empty());
+  parser.Add(32 + 35);
+  parser.Add(32 + 12);
+  EXPECT_TRUE(received_events.empty());
+  parser.Add(32 + 42);
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
+}
+
+// An escape sequence split by a read boundary can stall past the escape-key
+// timeout (mouse-report floods make this frequent). The fragment must not be
+// flushed as a Special event — the tail would then arrive as spurious
+// keystrokes (the trailing 'M' of a mouse report, typically). The parser
+// keeps accumulating and the sequence parses normally once complete.
+TEST(Event, PartialEscapeSequenceSurvivesTimeout) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('<');
+  parser.Add('3');
+  parser.Add('5');
+  parser.Add(';');
+  parser.Add('1');
+  parser.Add('0');
+  parser.Timeout(50);
+
+  EXPECT_TRUE(received_events.empty());
+
+  parser.Add(';');
+  parser.Add('4');
+  parser.Add('2');
+  parser.Add('M');
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(10, received_events[0].mouse().x);
+  EXPECT_EQ(42, received_events[0].mouse().y);
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
+}
+
 TEST(Event, MouseMiddleClick) {
   std::vector<Event> received_events;
   auto parser = TerminalInputParser(
@@ -424,7 +529,8 @@ TEST(Event, Special) {
       {str("\x1BOx"), Event::F10},
 
       // Function keys for scoansi
-      {str("\x1B[M"), Event::F1},
+      // scoansi F1 ("ESC [ M") is absent: that byte sequence is the X10
+      // mouse-report header and is parsed as a mouse event instead.
       {str("\x1B[N"), Event::F2},
       {str("\x1B[O"), Event::F3},
       {str("\x1B[P"), Event::F4},

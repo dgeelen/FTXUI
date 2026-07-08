@@ -76,7 +76,8 @@ const std::map<std::string, std::string> g_uniformize = {
     {"\x1BOx", "\x1B[21~"},  // F10
 
     // scoansi
-    {"\x1B[M", "\x1BOP"},    // F1
+    // Note: scoansi F1 ("ESC [ M") is absent: that byte sequence is the
+    // X10 mouse-report header and is parsed as a mouse event instead.
     {"\x1B[N", "\x1BOQ"},    // F2
     {"\x1B[O", "\x1BOR"},    // F3
     {"\x1B[P", "\x1BOS"},    // F4
@@ -100,9 +101,21 @@ void TerminalInputParser::Timeout(int time) {
     return;
   }
   timeout_ = 0;
-  if (!pending_.empty()) {
-    Send(SPECIAL);
+  if (pending_.empty()) {
+    return;
   }
+  // A lone ESC after the timeout is the user pressing the escape key.
+  // Anything longer that starts with ESC is a partially received escape
+  // sequence — reads can split one mid-sequence during mouse-report
+  // floods. Flushing the fragment would type garbage into the application
+  // AND the sequence's remaining bytes would then arrive as spurious
+  // keystrokes (the trailing 'M' of a split mouse report, typically).
+  // The remainder is still in flight, so keep accumulating: the sequence
+  // completes and parses normally on the next read.
+  if (pending_[0] == '\x1B' && pending_.size() > 1) {
+    return;
+  }
+  Send(SPECIAL);
 }
 
 void TerminalInputParser::Add(char c) {
@@ -333,6 +346,7 @@ TerminalInputParser::Output TerminalInputParser::ParseDCS() {
 
 TerminalInputParser::Output TerminalInputParser::ParseCSI() {
   bool altered = false;
+  bool has_arguments = false;
   int argument = 0;
   std::vector<int> arguments;
   while (true) {
@@ -342,18 +356,21 @@ TerminalInputParser::Output TerminalInputParser::ParseCSI() {
 
     if (Current() == '<') {
       altered = true;
+      has_arguments = true;
       continue;
     }
 
     if (Current() >= '0' && Current() <= '9') {
       argument *= 10;  // NOLINT
       argument += Current() - '0';
+      has_arguments = true;
       continue;
     }
 
     if (Current() == ';') {
       arguments.push_back(argument);
       argument = 0;
+      has_arguments = true;
       continue;
     }
 
@@ -369,6 +386,12 @@ TerminalInputParser::Output TerminalInputParser::ParseCSI() {
 
       switch (Current()) {
         case 'M':
+          // A bare "ESC [ M" is X10/normal mouse tracking: the terminal
+          // fell back to the legacy encoding because SGR (1006) wasn't
+          // registered. Three raw payload bytes follow.
+          if (!altered && !has_arguments) {
+            return ParseX10Mouse();
+          }
           return ParseMouse(altered, true, std::move(arguments));
         case 'm':
           return ParseMouse(altered, false, std::move(arguments));
@@ -448,6 +471,50 @@ TerminalInputParser::Output TerminalInputParser::ParseMouse(  // NOLINT
   output.mouse.y = arguments[2];  // NOLINT
 
   // Motion event.
+  return output;
+}
+
+// X10/normal tracking (DECSET 9/1000/1002/1003 without 1006/1015):
+// "ESC [ M" followed by exactly three raw bytes: button+32, column+32,
+// row+32. The button byte uses the same bit layout as SGR's first argument,
+// except a release is reported as button value 3 (the actual button is not
+// transmitted).
+TerminalInputParser::Output TerminalInputParser::ParseX10Mouse() {
+  if (!Eat()) {
+    return UNCOMPLETED;
+  }
+  const int cb = Current() - 32;
+  if (!Eat()) {
+    return UNCOMPLETED;
+  }
+  const int cx = Current() - 32;
+  if (!Eat()) {
+    return UNCOMPLETED;
+  }
+  const int cy = Current() - 32;
+
+  Output output(MOUSE);
+
+  // clang-format off
+  const int button      = cb & (1 + 2); // NOLINT
+  const bool is_shift   = cb & 4;       // NOLINT
+  const bool is_meta    = cb & 8;       // NOLINT
+  const bool is_control = cb & 16;      // NOLINT
+  const bool is_move    = cb & 32;      // NOLINT
+  const bool is_wheel   = cb & 64;      // NOLINT
+  // clang-format on
+
+  const bool released = !is_wheel && button == 3;
+  output.mouse.motion = is_move    ? Mouse::Moved
+                        : released ? Mouse::Released
+                                   : Mouse::Pressed;
+  output.mouse.button = is_wheel ? Mouse::Button(Mouse::WheelUp + button)
+                                 : Mouse::Button(button);
+  output.mouse.shift = is_shift;
+  output.mouse.meta = is_meta;
+  output.mouse.control = is_control;
+  output.mouse.x = cx;
+  output.mouse.y = cy;
   return output;
 }
 

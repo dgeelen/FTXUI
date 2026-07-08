@@ -59,6 +59,7 @@ class TerminalInputParser {
   Output ParseCSI();
   Output ParseOSC();
   Output ParseMouse(bool altered, bool pressed, std::vector<int> arguments);
+  Output ParseX10Mouse();
   Output ParseCursorPosition(std::vector<int> arguments);
 
   std::function<void(Event)> out_;
