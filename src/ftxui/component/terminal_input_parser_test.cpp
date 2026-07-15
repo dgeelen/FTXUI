@@ -62,8 +62,13 @@ TEST(Event, EscapeKeyEnoughWait) {
   auto parser = TerminalInputParser(
       [&](Event event) { received_events.push_back(std::move(event)); });
   parser.Add('');
+  // A lone ESC is held for one extra timeout window: it is indistinguishable
+  // from a mouse report split right after its ESC byte, so the body gets a
+  // chance to arrive before we commit to the escape-key interpretation.
   parser.Timeout(50);
+  EXPECT_TRUE(received_events.empty());
 
+  parser.Timeout(50);
   EXPECT_EQ(1u, received_events.size());
   EXPECT_EQ(received_events[0], Event::Escape);
 }
@@ -274,6 +279,40 @@ TEST(Event, PartialEscapeSequenceSurvivesTimeout) {
   EXPECT_TRUE(received_events[0].is_mouse());
   EXPECT_EQ(10, received_events[0].mouse().x);
   EXPECT_EQ(42, received_events[0].mouse().y);
+  EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
+}
+
+// The read boundary can also fall right after the lone ESC, leaving only
+// "\x1B" buffered while the report body is still in flight. Flushing it on
+// the first timeout would emit a spurious Escape and then leak the body as
+// characters (its ESC prefix already gone). The lone ESC is held one extra
+// timeout window so the body completes the sequence instead.
+TEST(Event, LoneEscapeSurvivesTimeoutWhenSequenceSplitAtEsc) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Timeout(50);
+
+  EXPECT_TRUE(received_events.empty());
+
+  parser.Add('[');
+  parser.Add('<');
+  parser.Add('3');
+  parser.Add('5');
+  parser.Add(';');
+  parser.Add('1');
+  parser.Add('3');
+  parser.Add('3');
+  parser.Add(';');
+  parser.Add('4');
+  parser.Add('5');
+  parser.Add('m');
+
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_TRUE(received_events[0].is_mouse());
+  EXPECT_EQ(133, received_events[0].mouse().x);
+  EXPECT_EQ(45, received_events[0].mouse().y);
   EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
 }
 

@@ -115,12 +115,24 @@ void TerminalInputParser::Timeout(int time) {
   if (pending_[0] == '\x1B' && pending_.size() > 1) {
     return;
   }
+  // A read boundary can also fall right after the lone ESC, leaving just
+  // "\x1B" buffered while the body of a split sequence is still in flight.
+  // That byte is indistinguishable from a real escape-key press, so we
+  // can't hold it forever — but flushing it on the first timeout would emit
+  // a spurious Escape (aborting the foreground app) and strip the body's
+  // ESC prefix, leaking it as characters. Grant one extra timeout window:
+  // the split body arrives well within it, while a genuine Escape press
+  // only costs one additional tick of latency.
+  if (pending_ == "\x1B" && lone_esc_timeouts_++ == 0) {
+    return;
+  }
   Send(SPECIAL);
 }
 
 void TerminalInputParser::Add(char c) {
   pending_ += c;
   timeout_ = 0;
+  lone_esc_timeouts_ = 0;
   position_ = -1;
   Send(Parse());
 }

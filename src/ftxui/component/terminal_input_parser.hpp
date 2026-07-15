@@ -65,6 +65,7 @@ class TerminalInputParser {
   std::function<void(Event)> out_;
   int position_ = -1;
   int timeout_ = 0;
+  int lone_esc_timeouts_ = 0;
   std::string pending_;
 };
 
