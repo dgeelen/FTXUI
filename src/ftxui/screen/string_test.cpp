@@ -21,6 +21,15 @@ TEST(StringTest, StringWidth) {
   EXPECT_EQ(2, string_width("⚫"));
   EXPECT_EQ(2, string_width("🪐"));
 
+  // Emoji presentation via VS16 (U+FE0F): base + selector is one wide grapheme
+  // (UTS #51), two columns - even when the bare base is narrow.
+  EXPECT_EQ(1, string_width("⚠"));    // U+26A0 bare: text presentation, narrow
+  EXPECT_EQ(2, string_width("⚠️"));    // U+26A0 U+FE0F: emoji presentation, wide
+  EXPECT_EQ(2, string_width("❤️"));    // U+2764 U+FE0F
+  // Newer SMP emoji must be full-width (table was stale below U+1FADB):
+  EXPECT_EQ(2, string_width("🫡"));    // U+1FAE1 saluting face
+  EXPECT_EQ(2, string_width("🫰"));    // U+1FAF0 hand
+
   // Combining characters:
   EXPECT_EQ(1, string_width("ā"));
   EXPECT_EQ(1, string_width("a⃒"));

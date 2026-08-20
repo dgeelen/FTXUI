@@ -29,7 +29,7 @@ struct Interval {
 };
 
 // As of Unicode 13.0.0
-constexpr std::array<Interval, 116> g_full_width_characters = {{
+constexpr std::array<Interval, 118> g_full_width_characters = {{
     {0x01100, 0x0115f}, {0x0231a, 0x0231b}, {0x02329, 0x0232a},
     {0x023e9, 0x023ec}, {0x023f0, 0x023f0}, {0x023f3, 0x023f3},
     {0x025fd, 0x025fe}, {0x02614, 0x02615}, {0x02648, 0x02653},
@@ -68,6 +68,11 @@ constexpr std::array<Interval, 116> g_full_width_characters = {{
     {0x1f97a, 0x1f9cb}, {0x1f9cd, 0x1f9ff}, {0x1fa70, 0x1fa74},
     {0x1fa78, 0x1fa7a}, {0x1fa80, 0x1fa86}, {0x1fa90, 0x1faa8},
     {0x1fab0, 0x1fab6}, {0x1fac0, 0x1fac2}, {0x1fad0, 0x1fad6},
+    // Symbols and Pictographs Extended-A faces (incl. U+1FAE1 🫡) and hands -
+    // emoji-presentation wide, added after this table's original Unicode
+    // vintage. (A full regen from current Unicode emoji-data is the thorough
+    // follow-up; these cover the reported gap.)
+    {0x1fae0, 0x1fae8}, {0x1faf0, 0x1faf8},
     {0x20000, 0x2fffd}, {0x30000, 0x3fffd},
 }};
 
@@ -1371,6 +1376,21 @@ int string_width(std::string_view input) {
 
     if (IsCombining(codepoint)) {
       continue;
+    }
+
+    // Emoji presentation: a base glyph followed by U+FE0F (VARIATION
+    // SELECTOR-16) is one wide grapheme (Unicode UTS #51) and occupies two
+    // columns, as ConEmu and mintty render it - even when the bare base is
+    // text-presentation narrow (e.g. U+26A0 ⚠, U+2764 ❤). Peek for the
+    // selector and consume it together with the base.
+    {
+      size_t after = start;
+      uint32_t next = 0;
+      if (EatCodePoint(input, start, &after, &next) && next == 0xFE0F) {
+        width += 2;
+        start = after;
+        continue;
+      }
     }
 
     if (IsFullWidth(codepoint)) {
