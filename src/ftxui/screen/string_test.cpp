@@ -29,6 +29,9 @@ TEST(StringTest, StringWidth) {
   // Newer SMP emoji must be full-width (table was stale below U+1FADB):
   EXPECT_EQ(2, string_width("🫡"));    // U+1FAE1 saluting face
   EXPECT_EQ(2, string_width("🫰"));    // U+1FAF0 hand
+  // Regenerated the table to Unicode 17.0: glyphs assigned after 13.0 are wide.
+  EXPECT_EQ(2, string_width("🛜"));    // U+1F6DC wireless (Emoji 15.0)
+  EXPECT_EQ(2, string_width("🩷"));    // U+1FA77 pink heart (Emoji 15.0)
 
   // Combining characters:
   EXPECT_EQ(1, string_width("ā"));
