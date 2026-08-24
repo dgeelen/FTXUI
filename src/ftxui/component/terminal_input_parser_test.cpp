@@ -62,9 +62,12 @@ TEST(Event, EscapeKeyEnoughWait) {
   auto parser = TerminalInputParser(
       [&](Event event) { received_events.push_back(std::move(event)); });
   parser.Add('');
-  // A lone ESC is held for one extra timeout window: it is indistinguishable
-  // from a mouse report split right after its ESC byte, so the body gets a
-  // chance to arrive before we commit to the escape-key interpretation.
+  // A lone ESC is held across several timeout windows (~150 ms,
+  // kLoneEscGraceWindows) before we commit to the escape-key interpretation,
+  // so a mouse report split right after its ESC byte has time to deliver its
+  // body instead of the ESC leaking as a spurious Escape.
+  parser.Timeout(50);
+  parser.Timeout(50);
   parser.Timeout(50);
   EXPECT_TRUE(received_events.empty());
 

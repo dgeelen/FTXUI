@@ -206,6 +206,40 @@ int CheckStdinReady(int fd) {
   return FD_ISSET(fd, &fds);                    // NOLINT
 }
 
+// Diagnostic tap for the lone-ESC-during-mouse-flood leak (paired with the
+// PARSER lines emitted from terminal_input_parser.cpp): logs the stdin read
+// side so a Timeout flush can be attributed to a genuinely absent body vs.
+// bytes that were present but a select() poll reported the fd not-ready.
+void StdinTap(const char* what, const char* buf, size_t n) {
+  static const char* path = std::getenv("FTXUI_INPUT_TAP");
+  // The idle "not-ready" poll fires ~60x/sec and would bury an all-day
+  // capture; only emit it when explicitly opted in for timing analysis.
+  static const bool log_idle = std::getenv("FTXUI_INPUT_TAP_IDLE") != nullptr;
+  if (!log_idle && what[0] == 'n' /* not-ready */) {
+    return;
+  }
+  static std::FILE* f = path ? std::fopen(path, "a") : nullptr;
+  if (f == nullptr) {
+    return;
+  }
+  const long long us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+  std::fprintf(f, "%10lld STDIN  %-9s n=%zu bytes=[", us, what, n);
+  for (size_t i = 0; i < n; ++i) {
+    unsigned char c = static_cast<unsigned char>(buf[i]);
+    if (c == 0x1b) {
+      std::fprintf(f, "^[");
+    } else if (c >= 32 && c < 127) {
+      std::fprintf(f, "%c", c);
+    } else {
+      std::fprintf(f, "\\x%02x", c);
+    }
+  }
+  std::fprintf(f, "]\n");
+  std::fflush(f);
+}
+
 #endif
 
 std::atomic<int> g_signal_exit_count = 0;  // NOLINT
@@ -1589,6 +1623,7 @@ size_t App::FetchTerminalEvents() {
         std::chrono::steady_clock::now() - internal_->last_char_time;
     const size_t timeout_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+    StdinTap("not-ready", nullptr, 0);
     internal_->terminal_input_parser.Timeout(timeout_ms);
     return 0;
   }
@@ -1601,6 +1636,8 @@ size_t App::FetchTerminalEvents() {
     return 0;
   }
   const auto l = static_cast<size_t>(n);
+
+  StdinTap("read", out.data(), l);
 
   // Convert the chars to events.
   for (size_t i = 0; i < l; ++i) {

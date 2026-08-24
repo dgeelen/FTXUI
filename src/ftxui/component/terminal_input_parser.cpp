@@ -13,7 +13,42 @@
 #include "ftxui/component/event.hpp"  // for Event
 #include "ftxui/component/task.hpp"   // for Task
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+
 namespace ftxui {
+
+namespace {
+// Diagnostic tap for the lone-ESC-during-mouse-flood leak: when
+// FTXUI_INPUT_TAP names a file, log every escape-buffer decision in Timeout()
+// with a monotonic microsecond stamp so it can be interleaved with the stdin
+// read log emitted from app.cpp's FetchTerminalEvents.
+void InputTap(const char* what, const std::string& pending, int timeout_ms,
+              int lone) {
+  static const char* path = std::getenv("FTXUI_INPUT_TAP");
+  static std::FILE* f = path ? std::fopen(path, "a") : nullptr;
+  if (f == nullptr) {
+    return;
+  }
+  const long long us = std::chrono::duration_cast<std::chrono::microseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+  std::fprintf(f, "%10lld PARSER %-9s timeout=%d lone=%d pending=[", us, what,
+               timeout_ms, lone);
+  for (unsigned char c : pending) {
+    if (c == 0x1b) {
+      std::fprintf(f, "^[");
+    } else if (c >= 32 && c < 127) {
+      std::fprintf(f, "%c", c);
+    } else {
+      std::fprintf(f, "\\x%02x", c);
+    }
+  }
+  std::fprintf(f, "]\n");
+  std::fflush(f);
+}
+}  // namespace
 
 // NOLINTNEXTLINE
 const std::map<std::string, std::string> g_uniformize = {
@@ -113,18 +148,27 @@ void TerminalInputParser::Timeout(int time) {
   // The remainder is still in flight, so keep accumulating: the sequence
   // completes and parses normally on the next read.
   if (pending_[0] == '\x1B' && pending_.size() > 1) {
+    InputTap("hold-seq", pending_, timeout_, lone_esc_timeouts_);
     return;
   }
   // A read boundary can also fall right after the lone ESC, leaving just
   // "\x1B" buffered while the body of a split sequence is still in flight.
-  // That byte is indistinguishable from a real escape-key press, so we
-  // can't hold it forever — but flushing it on the first timeout would emit
-  // a spurious Escape (aborting the foreground app) and strip the body's
-  // ESC prefix, leaking it as characters. Grant one extra timeout window:
-  // the split body arrives well within it, while a genuine Escape press
-  // only costs one additional tick of latency.
-  if (pending_ == "\x1B" && lone_esc_timeouts_++ == 0) {
+  // That byte is indistinguishable from a real escape-key press, so we can't
+  // hold it forever — but flushing too soon emits a spurious Escape (aborting
+  // the foreground app) and strips the body's ESC prefix, leaking it as
+  // characters. Hold it across a few timeout windows (~150 ms): a mouse report
+  // split at a read boundary delivers its body 80–120 ms after the orphaned
+  // ESC (see claude-deck docs/wide-glyph-followups-2026-07.md, Issue D), while
+  // a genuine Escape press costs that much latency — the standard ESC-timeout
+  // tradeoff (cf. vim ttimeoutlen). The ambiguity-free fix is the kitty
+  // keyboard protocol (disambiguate escape codes), which is tracked separately.
+  const int kLoneEscGraceWindows = 3;
+  if (pending_ == "\x1B" && lone_esc_timeouts_++ < kLoneEscGraceWindows) {
+    InputTap("hold-esc", pending_, timeout_, lone_esc_timeouts_);
     return;
+  }
+  if (!pending_.empty() && pending_[0] == '\x1B') {
+    InputTap("FLUSH-ESC", pending_, timeout_, lone_esc_timeouts_);
   }
   Send(SPECIAL);
 }
@@ -147,6 +191,17 @@ bool TerminalInputParser::Eat() {
 }
 
 void TerminalInputParser::Send(TerminalInputParser::Output output) {
+  // Emit tap: log the parser's decision for the leak-relevant outputs (a
+  // SPECIAL is how a partial mouse report escapes the parser; CHARACTER is how
+  // an orphaned tail leaks; DROP silently discards pending). MOUSE/CURSOR are
+  // skipped — high volume and consumed normally.
+  if (output.type == DROP || output.type == CHARACTER ||
+      output.type == SPECIAL) {
+    const char* what = output.type == DROP        ? "emit-DROP"
+                       : output.type == CHARACTER ? "emit-CHR"
+                                                  : "emit-SPC";
+    InputTap(what, pending_, timeout_, lone_esc_timeouts_);
+  }
   switch (output.type) {
     case UNCOMPLETED:
       return;
