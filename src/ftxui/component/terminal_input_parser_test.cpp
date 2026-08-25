@@ -62,16 +62,14 @@ TEST(Event, EscapeKeyEnoughWait) {
   auto parser = TerminalInputParser(
       [&](Event event) { received_events.push_back(std::move(event)); });
   parser.Add('');
-  // A lone ESC is held across several timeout windows (~150 ms,
-  // kLoneEscGraceWindows) before we commit to the escape-key interpretation,
-  // so a mouse report split right after its ESC byte has time to deliver its
-  // body instead of the ESC leaking as a spurious Escape.
-  parser.Timeout(50);
-  parser.Timeout(50);
-  parser.Timeout(50);
+  // A lone ESC is held ~150 ms (kLoneEscHoldMs) before we commit to the
+  // escape-key interpretation, so a mouse report split right after its ESC byte
+  // has time to deliver its body instead of the ESC leaking as a spurious
+  // Escape. Timeout() takes the absolute elapsed since the last input byte.
+  parser.Timeout(100);
   EXPECT_TRUE(received_events.empty());
 
-  parser.Timeout(50);
+  parser.Timeout(150);
   EXPECT_EQ(1u, received_events.size());
   EXPECT_EQ(received_events[0], Event::Escape);
 }
@@ -317,6 +315,29 @@ TEST(Event, LoneEscapeSurvivesTimeoutWhenSequenceSplitAtEsc) {
   EXPECT_EQ(133, received_events[0].mouse().x);
   EXPECT_EQ(45, received_events[0].mouse().y);
   EXPECT_EQ(received_events[0].mouse().motion, Mouse::Moved);
+}
+
+// An incomplete escape sequence whose remainder never arrives (bytes genuinely
+// lost, not just delayed by a read boundary) must be dropped after a bound, so
+// it doesn't wedge all later input by staying buffered forever.
+TEST(Event, StuckPartialEscapeSequenceIsDroppedNotWedged) {
+  std::vector<Event> received_events;
+  auto parser = TerminalInputParser(
+      [&](Event event) { received_events.push_back(std::move(event)); });
+  parser.Add('\x1B');
+  parser.Add('[');
+  parser.Add('<');
+  parser.Add('3');
+  parser.Timeout(100);  // still held: below the partial-sequence bound
+  EXPECT_TRUE(received_events.empty());
+
+  parser.Timeout(500);  // bound reached: the stuck fragment is dropped silently
+  EXPECT_TRUE(received_events.empty());
+
+  // Later input now flows instead of being appended to the stale fragment.
+  parser.Add('a');
+  EXPECT_EQ(1u, received_events.size());
+  EXPECT_EQ(received_events[0], Event::Character("a"));
 }
 
 TEST(Event, MouseMiddleClick) {

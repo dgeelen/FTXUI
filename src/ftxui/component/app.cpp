@@ -1528,9 +1528,9 @@ size_t App::FetchTerminalEvents() {
   if (records.size() == 0) {
     const auto timeout =
         std::chrono::steady_clock::now() - internal_->last_char_time;
-    const size_t timeout_microseconds =
-        std::chrono::duration_cast<std::chrono::microseconds>(timeout).count();
-    internal_->terminal_input_parser.Timeout(timeout_microseconds);
+    const size_t timeout_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+    internal_->terminal_input_parser.Timeout(timeout_ms);
     return 0;
   }
   internal_->last_char_time = std::chrono::steady_clock::now();
@@ -1605,9 +1605,9 @@ size_t App::FetchTerminalEvents() {
   if (l == 0) {
     const auto timeout =
         std::chrono::steady_clock::now() - internal_->last_char_time;
-    const size_t timeout_microseconds =
-        std::chrono::duration_cast<std::chrono::microseconds>(timeout).count();
-    internal_->terminal_input_parser.Timeout(timeout_microseconds);
+    const size_t timeout_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
+    internal_->terminal_input_parser.Timeout(timeout_ms);
     return 0;
   }
   internal_->last_char_time = std::chrono::steady_clock::now();

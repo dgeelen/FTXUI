@@ -129,54 +129,52 @@ const std::map<std::string, std::string> g_uniformize = {
 TerminalInputParser::TerminalInputParser(std::function<void(Event)> out)
     : out_(std::move(out)) {}
 
-void TerminalInputParser::Timeout(int time) {
-  timeout_ += time;
-  const int timeout_threshold = 50;
-  if (timeout_ < timeout_threshold) {
+void TerminalInputParser::Timeout(int elapsed_since_input_ms) {
+  // `elapsed_since_input_ms` is the wall-clock time since the last input byte
+  // (the caller resets its clock on every read). We key off that ABSOLUTE
+  // elapsed rather than accumulating per-call deltas, so the thresholds below
+  // mean real milliseconds regardless of how often the caller polls.
+  const int kFlushThresholdMs = 50;    // a settled buffer is committed
+  const int kLoneEscHoldMs = 150;      // hold a lone ESC this long for a split body
+  const int kPartialSeqMaxMs = 500;    // drop a never-completing ESC fragment
+
+  if (elapsed_since_input_ms < kFlushThresholdMs) {
     return;
   }
-  timeout_ = 0;
   if (pending_.empty()) {
     return;
   }
-  // A lone ESC after the timeout is the user pressing the escape key.
-  // Anything longer that starts with ESC is a partially received escape
-  // sequence — reads can split one mid-sequence during mouse-report
-  // floods. Flushing the fragment would type garbage into the application
-  // AND the sequence's remaining bytes would then arrive as spurious
-  // keystrokes (the trailing 'M' of a split mouse report, typically).
-  // The remainder is still in flight, so keep accumulating: the sequence
-  // completes and parses normally on the next read.
+  // An incomplete escape sequence (ESC + more): a read boundary can split a
+  // mouse report so its body is still in flight — keep it and let the next read
+  // complete it. But if the body never arrives (bytes genuinely lost), the
+  // fragment must not wedge all later input forever, so drop it after a bound.
   if (pending_[0] == '\x1B' && pending_.size() > 1) {
-    InputTap("hold-seq", pending_, timeout_, lone_esc_timeouts_);
+    if (elapsed_since_input_ms >= kPartialSeqMaxMs) {
+      Send(DROP);
+      return;
+    }
+    InputTap("hold-seq", pending_, elapsed_since_input_ms, 0);
     return;
   }
-  // A read boundary can also fall right after the lone ESC, leaving just
-  // "\x1B" buffered while the body of a split sequence is still in flight.
-  // That byte is indistinguishable from a real escape-key press, so we can't
-  // hold it forever — but flushing too soon emits a spurious Escape (aborting
-  // the foreground app) and strips the body's ESC prefix, leaking it as
-  // characters. Hold it across a few timeout windows (~150 ms): a mouse report
-  // split at a read boundary delivers its body 80–120 ms after the orphaned
-  // ESC (see claude-deck docs/wide-glyph-followups-2026-07.md, Issue D), while
-  // a genuine Escape press costs that much latency — the standard ESC-timeout
-  // tradeoff (cf. vim ttimeoutlen). The ambiguity-free fix is the kitty
-  // keyboard protocol (disambiguate escape codes), which is tracked separately.
-  const int kLoneEscGraceWindows = 3;
-  if (pending_ == "\x1B" && lone_esc_timeouts_++ < kLoneEscGraceWindows) {
-    InputTap("hold-esc", pending_, timeout_, lone_esc_timeouts_);
+  // A lone ESC is ambiguous: the user pressing Escape, or the orphaned lead
+  // byte of a mouse report split right after its ESC (the body arrives ~80-120ms
+  // later). Hold it ~150ms so the body can complete the sequence; only then
+  // treat it as the Escape key. A genuine Escape press costs that much latency
+  // — the standard ESC-timeout tradeoff (cf. vim ttimeoutlen). The
+  // ambiguity-free fix is the kitty keyboard protocol (disambiguate escape
+  // codes), which is tracked separately.
+  if (pending_ == "\x1B" && elapsed_since_input_ms < kLoneEscHoldMs) {
+    InputTap("hold-esc", pending_, elapsed_since_input_ms, 0);
     return;
   }
-  if (!pending_.empty() && pending_[0] == '\x1B') {
-    InputTap("FLUSH-ESC", pending_, timeout_, lone_esc_timeouts_);
+  if (pending_[0] == '\x1B') {
+    InputTap("FLUSH-ESC", pending_, elapsed_since_input_ms, 0);
   }
   Send(SPECIAL);
 }
 
 void TerminalInputParser::Add(char c) {
   pending_ += c;
-  timeout_ = 0;
-  lone_esc_timeouts_ = 0;
   position_ = -1;
   Send(Parse());
 }
@@ -200,7 +198,7 @@ void TerminalInputParser::Send(TerminalInputParser::Output output) {
     const char* what = output.type == DROP        ? "emit-DROP"
                        : output.type == CHARACTER ? "emit-CHR"
                                                   : "emit-SPC";
-    InputTap(what, pending_, timeout_, lone_esc_timeouts_);
+    InputTap(what, pending_, 0, 0);
   }
   switch (output.type) {
     case UNCOMPLETED:
