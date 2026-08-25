@@ -992,8 +992,18 @@ void App::HandleTask(Component component, Task& task) {
           }
           return;
         }
-        cursor_x_ = arg.cursor_x();
-        cursor_y_ = arg.cursor_y();
+        // Only a reply to a request we made describes the frame's origin.
+        // Install()'s post-alt-screen SyncWithTerminal() DSR is untracked and,
+        // on Windows, undrained: its reply arrives here reporting the cursor's
+        // position in the new screen buffer. Taking that as the origin shifts
+        // every later mouse event by that many rows (see the mouse().y -=
+        // cursor_y_ below), landing clicks above the pointer. Alt-screen frames
+        // sit at (1,1) and never request a position, so the guard leaves them
+        // on the default.
+        if (internal_->cursor_position_request.HasPending()) {
+          cursor_x_ = arg.cursor_x();
+          cursor_y_ = arg.cursor_y();
+        }
         internal_->cursor_position_request.OnReply();
         return;
       }
