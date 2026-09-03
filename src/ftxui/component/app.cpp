@@ -1639,21 +1639,44 @@ size_t App::FetchTerminalEvents() {
   }
   internal_->last_char_time = std::chrono::steady_clock::now();
 
-  // Read chars from the terminal.
+  // Fully drain what's buffered this wake rather than reading a single 128-byte
+  // chunk. The loop below is single-threaded with Draw(): while a frame renders
+  // stdin isn't read, so a slow frame during a mouse-report flood backs up
+  // several reads' worth. Reading one chunk per frame would split escape
+  // sequences (mouse reports) across frames and strand a lone ESC past its hold
+  // (see claude-deck docs/wide-glyph-followups-2026-07.md, Issue D). Make the fd
+  // non-blocking once so read() returns EAGAIN when the backlog is exhausted;
+  // restore the original flags on exit.
+  static bool nonblock_set = false;
+  if (!nonblock_set) {
+    nonblock_set = true;
+    const int fl = fcntl(tty_fd_, F_GETFL, 0);
+    if (fl != -1) {
+      fcntl(tty_fd_, F_SETFL, fl | O_NONBLOCK);
+      const int fd = tty_fd_;
+      on_exit_functions.emplace([fd, fl] { fcntl(fd, F_SETFL, fl); });
+    }
+  }
+
   std::array<char, 128> out{};
-  const ssize_t n = read(tty_fd_, out.data(), out.size());
-  if (n <= 0) {
-    return 0;
+  size_t total = 0;
+  const size_t kMaxDrainPerWake = 64 * 1024;  // bound so a nonstop flood can't starve rendering
+  while (total < kMaxDrainPerWake) {
+    const ssize_t n = read(tty_fd_, out.data(), out.size());
+    if (n <= 0) {
+      break;  // EAGAIN / EOF: backlog drained
+    }
+    const auto l = static_cast<size_t>(n);
+    StdinTap("read", out.data(), l);
+    for (size_t i = 0; i < l; ++i) {
+      internal_->terminal_input_parser.Add(out[i]);
+    }
+    total += l;
+    if (l < out.size()) {
+      break;  // short read: nothing more buffered right now
+    }
   }
-  const auto l = static_cast<size_t>(n);
-
-  StdinTap("read", out.data(), l);
-
-  // Convert the chars to events.
-  for (size_t i = 0; i < l; ++i) {
-    internal_->terminal_input_parser.Add(out[i]);
-  }
-  return l;
+  return total;
 #endif
 }
 
